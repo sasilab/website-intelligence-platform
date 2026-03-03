@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wip-api
+  labels:
+    app: wip
+    component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: wip
+      component: api
+  template:
+    metadata:
+      labels:
+        app: wip
+        component: api
+    spec:
+      containers:
+        - name: wip-api
+          image: ghcr.io/yourcompany/website-intelligence-platform:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "8000"
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: MONGODB_URI
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: REDIS_URL
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: OPENAI_API_KEY
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: ANTHROPIC_API_KEY
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: JWT_SECRET
+            - name: API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: API_KEYS
+            - name: VECTOR_STORE_TYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: wip-config
+                  key: VECTOR_STORE_TYPE
+            - name: CHROMADB_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: wip-config
+                  key: CHROMADB_HOST
+          envFrom:
+            - configMapRef:
+                name: wip-config
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: wip-data-pvc
+      imagePullSecrets:
+        - name: ghcr-secret
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chromadb
+  labels:
+    app: wip
+    component: vectorstore
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wip
+      component: vectorstore
+  template:
+    metadata:
+      labels:
+        app: wip
+        component: vectorstore
+    spec:
+      containers:
+        - name: chromadb
+          image: ghcr.io/chroma-core/chroma:latest
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: IS_PERSISTENT
+              value: "TRUE"
+            - name: PERSIST_DIRECTORY
+              value: "/chroma/chroma"
+            - name: ANONYMIZED_TELEMETRY
+              value: "FALSE"
+          volumeMounts:
+            - name: chroma-data
+              mountPath: /chroma/chroma
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+      volumes:
+        - name: chroma-data
+          persistentVolumeClaim:
+            claimName: chromadb-pvc

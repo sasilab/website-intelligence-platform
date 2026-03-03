@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wip-api
+  labels:
+    app: wip
+    component: api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: wip
+    component: api
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: chromadb
+  labels:
+    app: wip
+    component: vectorstore
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: wip
+    component: vectorstore

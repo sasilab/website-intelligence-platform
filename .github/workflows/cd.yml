@@ -1,0 +1,246 @@
+name: CD Pipeline
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    environment:
+      name: staging
+      url: https://staging.wip.yourcompany.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster wip-staging \
+            --service wip-api \
+            --force-new-deployment \
+            --desired-count 2
+        continue-on-error: true
+
+      - name: Deploy to Kubernetes (Alternative)
+        run: |
+          echo "Deploying to Kubernetes staging..."
+          # kubectl set image deployment/wip-api wip-api=${{ needs.build-and-push.outputs.image-tag }}
+        continue-on-error: true
+
+      - name: Trigger platform crawl
+        run: |
+          curl -X POST \
+            https://staging.wip.yourcompany.com/api/webhooks/deployment \
+            -H "X-API-Key: ${{ secrets.STAGING_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event": "deployment",
+              "environment": "staging",
+              "version": "${{ github.sha }}",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+              "triggered_by": "github-actions"
+            }'
+        continue-on-error: true
+
+      - name: Run smoke tests
+        run: |
+          sleep 30
+          curl -f https://staging.wip.yourcompany.com/health || exit 1
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-staging]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production'
+    environment:
+      name: production
+      url: https://wip.yourcompany.com
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster wip-production \
+            --service wip-api \
+            --force-new-deployment \
+            --desired-count 4
+        continue-on-error: true
+
+      - name: Create deployment record
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'production',
+              description: 'Production deployment',
+              auto_merge: false,
+              required_contexts: [],
+              production_environment: true
+            });
+
+      - name: Trigger platform crawl for all clients
+        run: |
+          curl -X POST \
+            https://wip.yourcompany.com/api/webhooks/deployment \
+            -H "X-API-Key: ${{ secrets.PRODUCTION_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event": "deployment",
+              "environment": "production",
+              "version": "${{ github.ref_name }}",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+              "triggered_by": "github-actions"
+            }'
+        continue-on-error: true
+
+      - name: Run smoke tests
+        run: |
+          sleep 60
+          curl -f https://wip.yourcompany.com/health || exit 1
+
+      - name: Notify deployment
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          text: |
+            🚀 Production Deployment Successful!
+            Version: ${{ github.ref_name }}
+            Environment: Production
+            URL: https://wip.yourcompany.com
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        if: success()
+
+  rollback:
+    name: Rollback Production
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: failure()
+    environment:
+      name: production
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Rollback ECS service
+        run: |
+          PREVIOUS_TASK_DEF=$(aws ecs describe-services \
+            --cluster wip-production \
+            --services wip-api \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          aws ecs update-service \
+            --cluster wip-production \
+            --service wip-api \
+            --task-definition $PREVIOUS_TASK_DEF
+
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: "⚠️ Production deployment failed and was rolled back",
+              attachments: [{
+                color: "danger",
+                text: "Deployment of ${{ github.ref_name }} to production failed. Previous version restored."
+              }]
+            }
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}

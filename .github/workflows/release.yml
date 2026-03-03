@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Create virtual environment
+        run: uv venv .venv
+
+      - name: Install dependencies
+        run: |
+          source .venv/bin/activate
+          uv pip sync pyproject.toml
+
+      - name: Python Semantic Release
+        id: release
+        uses: python-semantic-release/python-semantic-release@v9.15.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit: true
+          tag: true
+          push: true
+          changelog: true
+          vcs_release: true
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          source .venv/bin/activate
+          pip install build twine
+          python -m build
+          twine upload dist/* -u __token__ -p $PYPI_TOKEN
+        continue-on-error: true
+
+      - name: Generate Release Notes
+        if: steps.release.outputs.released == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: commits } = await github.rest.repos.compareCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              base: context.payload.before,
+              head: context.payload.after
+            });
+
+            const features = [];
+            const fixes = [];
+            const breaking = [];
+            const other = [];
+
+            for (const commit of commits.commits) {
+              const message = commit.commit.message;
+              if (message.startsWith('feat:')) features.push(message);
+              else if (message.startsWith('fix:')) fixes.push(message);
+              else if (message.includes('BREAKING CHANGE:')) breaking.push(message);
+              else other.push(message);
+            }
+
+            let body = `## What's Changed\n\n`;
+
+            if (breaking.length > 0) {
+              body += `### ⚠️ Breaking Changes\n${breaking.map(m => `- ${m}`).join('\n')}\n\n`;
+            }
+            if (features.length > 0) {
+              body += `### ✨ Features\n${features.map(m => `- ${m}`).join('\n')}\n\n`;
+            }
+            if (fixes.length > 0) {
+              body += `### 🐛 Bug Fixes\n${fixes.map(m => `- ${m}`).join('\n')}\n\n`;
+            }
+            if (other.length > 0) {
+              body += `### 📝 Other Changes\n${other.map(m => `- ${m}`).join('\n')}\n\n`;
+            }
+
+            return body;
+
+      - name: Create GitHub Release
+        if: steps.release.outputs.released == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${{ steps.release.outputs.version }}`,
+              name: `v${{ steps.release.outputs.version }}`,
+              body: ${{ steps.generate-notes.outputs.result }},
+              draft: false,
+              prerelease: false,
+              generate_release_notes: true
+            });
+
+            console.log(`Created release ${release.data.html_url}`);
+
+      - name: Trigger Production Deployment
+        if: steps.release.outputs.released == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'cd.yml',
+              ref: 'main',
+              inputs: {
+                environment: 'production'
+              }
+            });

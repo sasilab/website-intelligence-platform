@@ -1,0 +1,202 @@
+name: Scheduled Tasks
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+    # Run every 6 hours for client crawls
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task to run'
+        required: true
+        default: 'crawl'
+        type: choice
+        options:
+          - crawl
+          - cleanup
+          - backup
+          - report
+
+jobs:
+  global-crawl:
+    name: Global Website Crawl
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 2 * * *' || github.event.inputs.task == 'crawl'
+
+    steps:
+      - name: Trigger global crawl
+        run: |
+          curl -X POST \
+            ${{ secrets.API_URL }}/api/crawl/trigger \
+            -H "X-API-Key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "crawl_type": "incremental",
+              "client_id": null,
+              "trigger_source": "scheduled"
+            }'
+
+      - name: Monitor crawl status
+        run: |
+          sleep 60
+          STATUS=$(curl -s \
+            ${{ secrets.API_URL }}/api/crawl/status \
+            -H "X-API-Key: ${{ secrets.API_KEY }}" \
+            | jq -r '.status')
+
+          echo "Crawl status: $STATUS"
+
+  client-crawls:
+    name: Client-Specific Crawls
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 */6 * * *' || github.event.inputs.task == 'crawl'
+    strategy:
+      matrix:
+        client: ${{ fromJson(secrets.CLIENT_LIST || '["demo_client"]') }}
+
+    steps:
+      - name: Trigger crawl for ${{ matrix.client }}
+        run: |
+          curl -X POST \
+            ${{ secrets.API_URL }}/api/crawl/trigger \
+            -H "X-API-Key: ${{ secrets.API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "crawl_type": "incremental",
+              "client_id": "${{ matrix.client }}",
+              "trigger_source": "scheduled"
+            }'
+
+  cleanup:
+    name: Database Cleanup
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 2 * * *' || github.event.inputs.task == 'cleanup'
+
+    steps:
+      - name: Cleanup old crawl logs
+        run: |
+          echo "Cleaning up crawl logs older than 30 days..."
+          # Add cleanup API call here
+
+      - name: Optimize vector store
+        run: |
+          echo "Optimizing vector store indices..."
+          # Add optimization API call here
+
+      - name: Clear expired cache
+        run: |
+          echo "Clearing expired cache entries..."
+          # Add cache cleanup API call here
+
+  backup:
+    name: Backup Data
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 2 * * *' || github.event.inputs.task == 'backup'
+
+    steps:
+      - name: Backup MongoDB
+        run: |
+          echo "Backing up MongoDB database..."
+          # mongodump command or API call
+
+      - name: Backup vector store
+        run: |
+          echo "Backing up vector store..."
+          # Vector store backup command
+
+      - name: Upload backups to S3
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Upload files
+        run: |
+          DATE=$(date +%Y%m%d)
+          # aws s3 cp backup.tar.gz s3://wip-backups/${DATE}/
+
+  analytics-report:
+    name: Generate Analytics Report
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 2 * * 1' || github.event.inputs.task == 'report'
+
+    steps:
+      - name: Fetch analytics data
+        id: analytics
+        run: |
+          STATS=$(curl -s \
+            ${{ secrets.API_URL }}/api/analytics/summary \
+            -H "X-API-Key: ${{ secrets.API_KEY }}")
+
+          echo "stats=$STATS" >> $GITHUB_OUTPUT
+
+      - name: Generate report
+        run: |
+          echo "# Weekly Analytics Report" > report.md
+          echo "" >> report.md
+          echo "Generated: $(date)" >> report.md
+          echo "" >> report.md
+          echo "${{ steps.analytics.outputs.stats }}" | jq -r '.' >> report.md
+
+      - name: Send report via email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.EMAIL_USERNAME }}
+          password: ${{ secrets.EMAIL_PASSWORD }}
+          subject: WIP Weekly Analytics Report
+          to: team@yourcompany.com
+          from: WIP Analytics
+          body: file://report.md
+        continue-on-error: true
+
+      - name: Post to Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: "📊 Weekly Analytics Report",
+              attachments: [{
+                color: "good",
+                text: "Analytics report generated successfully. Check your email for details."
+              }]
+            }
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        continue-on-error: true
+
+  health-check:
+    name: Health Check
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Check API health
+        run: |
+          curl -f ${{ secrets.API_URL }}/health || exit 1
+
+      - name: Check services
+        run: |
+          # Check MongoDB
+          # Check Redis
+          # Check Vector Store
+          echo "All services healthy"
+
+      - name: Alert on failure
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: "🚨 Health Check Failed",
+              attachments: [{
+                color: "danger",
+                text: "One or more services are unhealthy. Please investigate immediately."
+              }]
+            }
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}

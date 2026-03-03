@@ -1,0 +1,185 @@
+# Default values for website-intelligence-platform
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/yourcompany/website-intelligence-platform
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets:
+  - name: ghcr-secret
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+  annotations: {}
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: wip.yourcompany.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: wip-tls
+      hosts:
+        - wip.yourcompany.com
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+persistence:
+  enabled: true
+  storageClass: "gp3"
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /data
+
+env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+  MAX_CRAWL_DEPTH: "5"
+  CRAWL_TIMEOUT: "30000"
+  RATE_LIMIT_REQUESTS: "10"
+  ENABLE_SCHEDULER: "true"
+  ENABLE_CHANGE_DETECTION: "true"
+  ENABLE_LLM_SUMMARIZATION: "true"
+  VECTOR_STORE_TYPE: chromadb
+
+secrets:
+  create: true
+  mongodb_uri: ""
+  redis_url: ""
+  openai_api_key: ""
+  anthropic_api_key: ""
+  jwt_secret: ""
+  api_keys: ""
+
+chromadb:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ghcr.io/chroma-core/chroma
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: "gp3"
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+mongodb:
+  enabled: true
+  auth:
+    enabled: true
+    rootPassword: changeme
+    database: website_intelligence
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: "gp3"
+  metrics:
+    enabled: true
+
+redis:
+  enabled: true
+  auth:
+    enabled: true
+    password: changeme
+  master:
+    persistence:
+      enabled: true
+      size: 10Gi
+  replica:
+    replicaCount: 2
+    persistence:
+      enabled: true
+      size: 10Gi
+  metrics:
+    enabled: true
+
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true
+    dashboards:
+      - wip-dashboard.json
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  retention: 30
+  s3:
+    bucket: wip-backups
+    region: us-east-1
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - wip
+          topologyKey: kubernetes.io/hostname
