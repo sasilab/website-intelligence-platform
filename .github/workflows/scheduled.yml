@@ -172,7 +172,7 @@ jobs:
   health-check:
     name: Health Check
     runs-on: ubuntu-latest
-    if: always()
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Check API health
