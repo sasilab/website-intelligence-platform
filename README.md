@@ -400,4 +400,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 For issues and questions:
 - GitHub Issues: [https://github.com/yourcompany/website-intelligence-platform/issues](https://github.com/yourcompany/website-intelligence-platform/issues)
 - Documentation: [https://docs.yourcompany.com/wip](https://docs.yourcompany.com/wip)
-- Email: support@yourcompany.com
+- Email: sasi@andrilium.com
